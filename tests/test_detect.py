@@ -58,6 +58,37 @@ def test_detect_local_gpus_subprocess():
         assert count == 4
 
 
+def test_detect_local_gpus_nvidia_smi_fallback():
+    """sysfs without supported GPUs (e.g. WSL2) falls back to nvidia-smi."""
+    sysfs_result = type("Result", (), {"returncode": 0, "stdout": "0x1414 0x008e\n", "stderr": ""})()
+    smi_result = type("Result", (), {"returncode": 0, "stdout": "NVIDIA GeForce RTX 5090\n", "stderr": ""})()
+
+    def fake_run(cmd, *args, **kwargs):
+        return smi_result if cmd[0] == "nvidia-smi" else sysfs_result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        name, count = detect_local_gpus()
+        assert name == "NVIDIA GeForce RTX 5090"
+        assert count == 1
+
+
+def test_detect_local_gpus_nvidia_smi_mixed_error():
+    """nvidia-smi fallback raises on mixed GPU types."""
+    sysfs_result = type("Result", (), {"returncode": 0, "stdout": "0x1414 0x008e\n", "stderr": ""})()
+    smi_result = type(
+        "Result",
+        (),
+        {"returncode": 0, "stdout": "NVIDIA GeForce RTX 5090\nNVIDIA GeForce RTX 4090\n", "stderr": ""},
+    )()
+
+    def fake_run(cmd, *args, **kwargs):
+        return smi_result if cmd[0] == "nvidia-smi" else sysfs_result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="Mixed GPU types"):
+            detect_local_gpus()
+
+
 # ── detect_remote_gpus ─────────────────────────────────────────────
 
 

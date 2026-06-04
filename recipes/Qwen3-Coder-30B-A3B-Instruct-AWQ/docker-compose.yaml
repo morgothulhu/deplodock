@@ -1,0 +1,40 @@
+services:
+
+  vllm_0:
+    image: vllm/vllm-openai:v0.17.0
+    container_name: vllm_0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - /mnt/models:/mnt/models
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=
+      - HF_HOME=/mnt/models
+    ports:
+      - "8000:8000"
+    shm_size: '16gb'
+    ipc: host
+    restart: unless-stopped
+    command: >
+      --trust-remote-code
+      --gpu-memory-utilization=0.9
+      --host 0.0.0.0
+      --port 8000
+      --tensor-parallel-size 1
+      --pipeline-parallel-size 1
+      --data-parallel-size 1
+      --model QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ
+      --served-model-name QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ
+      --max-model-len 114688
+      --max-num-seqs 16
+    healthcheck:
+      test: ["CMD", "bash", "-c", "curl -f http://localhost:8000/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 180
+      start_period: 1200s
