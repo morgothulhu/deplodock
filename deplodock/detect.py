@@ -86,8 +86,36 @@ def _parse_sysfs_output(output: str) -> tuple[str, int]:
     return gpu_name, count
 
 
+def _detect_via_nvidia_smi() -> tuple[str, int]:
+    """Detect GPUs via nvidia-smi for environments without PCI passthrough (e.g. WSL2)."""
+    import subprocess
+
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"nvidia-smi failed: {result.stderr.strip()}")
+
+    names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not names:
+        raise RuntimeError("No GPUs reported by nvidia-smi")
+
+    unique = set(names)
+    if len(unique) > 1:
+        joined = ", ".join(sorted(unique))
+        raise RuntimeError(f"Mixed GPU types detected: {joined}. All GPUs must be the same type.")
+
+    return names[0], len(names)
+
+
 def detect_local_gpus() -> tuple[str, int]:
-    """Detect local GPUs by scanning PCI sysfs. Returns (gpu_name, count)."""
+    """Detect local GPUs by scanning PCI sysfs, falling back to nvidia-smi.
+
+    The sysfs scan fails under WSL2 and other paravirtualized environments where the
+    GPU is not exposed as a PCI device; nvidia-smi still works there via the host driver.
+    """
     import subprocess
 
     result = subprocess.run(
@@ -95,10 +123,13 @@ def detect_local_gpus() -> tuple[str, int]:
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to scan PCI devices: {result.stderr}")
+    if result.returncode == 0:
+        try:
+            return _parse_sysfs_output(result.stdout)
+        except RuntimeError as exc:
+            logger.debug("PCI sysfs detection failed (%s); falling back to nvidia-smi", exc)
 
-    return _parse_sysfs_output(result.stdout)
+    return _detect_via_nvidia_smi()
 
 
 async def detect_remote_gpus(server: str, ssh_key: str, ssh_port: int) -> tuple[str, int]:
