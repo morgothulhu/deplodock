@@ -87,7 +87,7 @@ def generate_compose(recipe: Recipe, model_dir, hf_token, num_instances=1, gpu_d
         services += f"""
   {engine}_{i}:
     image: {image}
-    container_name: {engine}_{i}{entrypoint_line}
+{entrypoint_line}
 {gpu_section}
     volumes:
       - {model_dir}:{model_dir}
@@ -114,7 +114,6 @@ def generate_compose(recipe: Recipe, model_dir, hf_token, num_instances=1, gpu_d
         services += f"""
   nginx:
     image: nginx:alpine
-    container_name: nginx_lb
     ports:
       - "8080:8080"
     volumes:

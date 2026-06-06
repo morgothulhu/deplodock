@@ -1,6 +1,7 @@
 """Deploy orchestration: run_deploy, run_teardown, deploy, teardown."""
 
 import asyncio
+import hashlib
 import json
 import logging
 
@@ -14,6 +15,12 @@ from deplodock.provisioning.ssh_transport import make_run_cmd, make_write_file
 from deplodock.recipe.types import Recipe
 
 logger = logging.getLogger(__name__)
+
+
+def _hf_download_container_name(model_name: str) -> str:
+    """Build a deterministic per-model helper container name."""
+    digest = hashlib.sha1(model_name.encode("utf-8")).hexdigest()[:12]
+    return f"deplodock_hf_dl_{digest}"
 
 
 async def run_deploy(
@@ -69,17 +76,49 @@ async def run_deploy(
 
     # Step 2: Download model via hf CLI in container
     logger.info(f"Downloading model {model_name}...")
+    dl_container = _hf_download_container_name(model_name)
+    model_blob_dir = f"{model_dir}/hub/models--{model_name.replace('/', '--')}/blobs"
+
+    # If a previous run timed out locally, the remote helper container can keep
+    # running and hold HF lock files. Force-remove it before retrying.
+    await run_cmd(f"docker rm -f {dl_container} >/dev/null 2>&1 || true", timeout=60, log_output=False)
+
     dl_cmd = (
         f"docker run --rm"
+        f" --name {dl_container}"
         f" -e HUGGING_FACE_HUB_TOKEN={hf_token}"
         f" -e HF_HOME={model_dir}"
         f" -v {model_dir}:{model_dir}"
         f" --entrypoint bash"
         f" {image}"
-        f" -c 'HF_HUB_ENABLE_HF_TRANSFER=1 hf download {model_name}'"
+        f" -c 'HF_HUB_ENABLE_HF_TRANSFER=1 HF_HUB_DISABLE_PROGRESS_BARS=0 hf download {model_name}'"
     )
-    rc, _, _ = await run_cmd(dl_cmd, timeout=7200, log_output=True)
+
+    download_task = asyncio.create_task(run_cmd(dl_cmd, timeout=21600, log_output=True))
+    last_cached_bytes = None
+    while not download_task.done():
+        rc_sz, out_sz, _ = await run_cmd(
+            f"du -sb {model_blob_dir} 2>/dev/null | cut -f1 || echo 0",
+            stream=False,
+            timeout=30,
+            log_output=False,
+        )
+        if rc_sz == 0:
+            try:
+                cur_cached_bytes = int((out_sz or "0").strip() or "0")
+            except ValueError:
+                cur_cached_bytes = None
+            if cur_cached_bytes is not None and cur_cached_bytes != last_cached_bytes:
+                logger.info(f"[hf-progress] cached_bytes={cur_cached_bytes}")
+                last_cached_bytes = cur_cached_bytes
+        if not download_task.done():
+            await asyncio.sleep(15)
+
+    rc, _, _ = await download_task
     if rc != 0:
+        # Best-effort cleanup in case the SSH-side timeout killed only the local
+        # client while the remote helper container kept running.
+        await run_cmd(f"docker rm -f {dl_container} >/dev/null 2>&1 || true", timeout=60, log_output=False)
         logger.error("Failed to download model")
         return False
 

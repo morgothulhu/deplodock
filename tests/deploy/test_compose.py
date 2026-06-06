@@ -66,7 +66,6 @@ def test_compose_multi_instance(sample_config_multi):
 
     # Nginx load balancer
     assert "nginx:" in result
-    assert "nginx_lb" in result
     assert '"8080:8080"' in result
 
     # GPU device IDs for multi-instance (not count: all)
